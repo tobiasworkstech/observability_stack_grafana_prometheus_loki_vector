@@ -1,0 +1,81 @@
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+# ============================================
+# SOURCES - Where data comes from
+# ============================================
+sources:
+  # Collect Docker container logs
+  docker_logs:
+    type: docker_logs
+    docker_host: unix:///var/run/docker.sock
+
+  # Internal Vector metrics
+  vector_metrics:
+    type: internal_metrics
+
+  # HTTP endpoint for receiving logs from applications
+  http_logs:
+    type: http_server
+    address: "0.0.0.0:8080"
+    decoding:
+      codec: json
+
+# ============================================
+# TRANSFORMS - Process and enrich data
+# ============================================
+transforms:
+  # Parse and enrich Docker logs
+  docker_logs_parsed:
+    type: remap
+    inputs:
+      - docker_logs
+    source: |
+      .source = "docker"
+      .host = get_env_var("HOSTNAME") ?? "unknown"
+
+  # Parse HTTP logs
+  http_logs_parsed:
+    type: remap
+    inputs:
+      - http_logs
+    source: |
+      .source = "http"
+      .host = get_env_var("HOSTNAME") ?? "unknown"
+
+# ============================================
+# SINKS - Where data goes
+# ============================================
+sinks:
+  # Send logs to Loki
+  loki:
+    type: loki
+    inputs:
+      - docker_logs_parsed
+      - http_logs_parsed
+    endpoint: http://loki:3100
+    encoding:
+      codec: json
+    labels:
+      source: "{{ source }}"
+      host: "{{ host }}"
+      job: "vector"
+    out_of_order_action: accept
+
+  # Expose metrics for Prometheus to scrape
+  prometheus_exporter:
+    type: prometheus_exporter
+    inputs:
+      - vector_metrics
+    address: "0.0.0.0:9598"
+    default_namespace: vector
+
+  # Send metrics directly to Prometheus via remote write
+  prometheus_remote_write:
+    type: prometheus_remote_write
+    inputs:
+      - vector_metrics
+    endpoint: http://prometheus:9090/api/v1/write
+    healthcheck:
+      enabled: false
